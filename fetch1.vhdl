@@ -7,7 +7,8 @@ use work.common.all;
 
 entity fetch1 is
     generic(
-	RESET_ADDRESS : std_logic_vector(63 downto 0) := (others => '0')
+	RESET_ADDRESS     : std_logic_vector(63 downto 0) := (others => '0');
+	ALT_RESET_ADDRESS : std_logic_vector(63 downto 0) := (others => '0')
 	);
     port(
 	clk           : in std_ulogic;
@@ -17,6 +18,7 @@ entity fetch1 is
 	stall_in      : in std_ulogic;
 	flush_in      : in std_ulogic;
 	stop_in       : in std_ulogic;
+	alt_reset_in  : in std_ulogic;
 
 	-- redirect from execution unit
 	e_in          : in Execute1ToFetch1Type;
@@ -40,6 +42,8 @@ begin
 	if rising_edge(clk) then
 	    if r /= r_next then
 		report "fetch1 rst:" & std_ulogic'image(rst) &
+                    " IR:" & std_ulogic'image(e_in.virt_mode) &
+                    " P:" & std_ulogic'image(e_in.priv_mode) &
 		    " R:" & std_ulogic'image(e_in.redirect) &
 		    " S:" & std_ulogic'image(stall_in) &
 		    " T:" & std_ulogic'image(stop_in) &
@@ -60,10 +64,18 @@ begin
 	v_int := r_int;
 
 	if rst = '1' then
-	    v.nia :=  RESET_ADDRESS;
+	    if alt_reset_in = '1' then
+		v.nia :=  ALT_RESET_ADDRESS;
+	    else
+		v.nia :=  RESET_ADDRESS;
+	    end if;
+            v.virt_mode := '0';
+            v.priv_mode := '1';
 	    v_int.stop_state := RUNNING;
 	elsif e_in.redirect = '1' then
 	    v.nia := e_in.redirect_nia;
+            v.virt_mode := e_in.virt_mode;
+            v.priv_mode := e_in.priv_mode;
 	elsif stall_in = '0' then
 
 	    -- For debug stop/step to work properly we need a little bit of
