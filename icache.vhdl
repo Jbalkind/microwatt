@@ -24,6 +24,7 @@ library work;
 use work.utils.all;
 use work.common.all;
 use work.wishbone_types.all;
+use work.pmesh_types.all;
 
 -- 64 bit direct mapped icache. All instructions are 4B aligned.
 
@@ -41,7 +42,9 @@ entity icache is
         -- L1 ITLB log_2(page_size)
         TLB_LG_PGSZ : positive := 12;
         -- Number of real address bits that we store
-        REAL_ADDR_BITS : positive := 56
+        REAL_ADDR_BITS : positive := 56;
+        -- Type of icache bus to use
+        INTERFACE_TYPE : string := "wishbone"
         );
     port (
         clk          : in std_ulogic;
@@ -57,7 +60,13 @@ entity icache is
 	inval_in     : in std_ulogic;
 
         wishbone_out : out wishbone_master_out;
-        wishbone_in  : in wishbone_slave_out
+        wishbone_in  : in wishbone_slave_out;
+
+        tri_trans_out : out tri_trans_core_l15;
+        tri_trans_in  : in tri_trans_l15_core;
+
+        tri_resp_out : out tri_resp_core_l15;
+        tri_resp_in  : in tri_resp_l15_core
         );
 end entity icache;
 
@@ -67,14 +76,15 @@ architecture rtl of icache is
     -- use consecutive indices for to make a cache "line"
     --
     -- ROW_SIZE is the width in bytes of the BRAM (based on WB, so 64-bits)
-    constant ROW_SIZE      : natural := wishbone_data_bits / 8;
+    constant ROW_SIZE      : natural := LINE_SIZE;
+    constant ROW_SIZE_BITS : natural := LINE_SIZE*8;
     -- ROW_PER_LINE is the number of row (wishbone transactions) in a line
     constant ROW_PER_LINE  : natural := LINE_SIZE / ROW_SIZE;
     -- BRAM_ROWS is the number of rows in BRAM needed to represent the full
     -- icache
     constant BRAM_ROWS     : natural := NUM_LINES * ROW_PER_LINE;
     -- INSN_PER_ROW is the number of 32bit instructions per BRAM row
-    constant INSN_PER_ROW  : natural := wishbone_data_bits / 32;
+    constant INSN_PER_ROW  : natural := (LINE_SIZE * 8) / 32;
     -- Bit fields counts in the address
 
     -- INSN_BITS is the number of bits to select an instruction in a row
@@ -114,7 +124,7 @@ architecture rtl of icache is
     subtype way_t is integer range 0 to NUM_WAYS-1;
 
     -- The cache data BRAM organized as described above for each way
-    subtype cache_row_t is std_ulogic_vector(wishbone_data_bits-1 downto 0);
+    subtype cache_row_t is std_ulogic_vector(ROW_SIZE_BITS-1 downto 0);
 
     -- The cache tags LUTRAM has a row per set. Vivado is a pain and will
     -- not handle a clean (commented) definition of the cache tags as a 3d
@@ -171,6 +181,7 @@ architecture rtl of icache is
 	-- Cache miss state (reload state machine)
         state            : state_t;
         wb               : wishbone_master_out;
+        tri              : tri_trans_core_l15;
 	store_way        : way_t;
         store_index      : index_t;
 	store_row        : row_t;
@@ -347,7 +358,7 @@ begin
 	way: entity work.cache_ram
 	    generic map (
 		ROW_BITS => ROW_BITS,
-		WIDTH => wishbone_data_bits
+		WIDTH => ROW_SIZE_BITS
 		)
 	    port map (
 		clk     => clk,
@@ -356,13 +367,13 @@ begin
 		rd_data => dout,
 		wr_sel  => wr_sel,
 		wr_addr => wr_addr,
-		wr_data => wishbone_in.dat
+		wr_data => (tri_resp_in.data_0 & tri_resp_in.data_1 & tri_resp_in.data_2 & tri_resp_in.data_3)
 		);
 	process(all)
 	begin
 	    do_read <= '1';
 	    do_write <= '0';
-	    if wishbone_in.ack = '1' and r.store_way = i then
+	    if tri_resp_in.val = '1' and (tri_resp_in.return_type = ifill1) and r.store_way = i then
 		do_write <= '1';
 	    end if;
 	    cache_out(i) <= dout;
@@ -521,6 +532,8 @@ begin
 
 	-- Wishbone requests output (from the cache miss reload machine)
 	wishbone_out <= r.wb;
+    tri_trans_out <= r.tri;
+    tri_resp_out.req_ack <= tri_resp_in.val;
     end process;
 
     -- Cache hit synchronous machine
@@ -557,20 +570,33 @@ begin
         if rising_edge(clk) then
 	    -- On reset, clear all valid bits to force misses
             if rst = '1' then
-		for i in index_t loop
-		    cache_valids(i) <= (others => '0');
-		end loop;
+                for i in index_t loop
+                    cache_valids(i) <= (others => '0');
+                end loop;
                 r.state <= IDLE;
-                r.wb.cyc <= '0';
-                r.wb.stb <= '0';
+                if INTERFACE_TYPE = "wishbone" then
+                    r.wb.cyc <= '0';
+                    r.wb.stb <= '0';
 
-		-- We only ever do reads on wishbone
-		r.wb.dat <= (others => '0');
-		r.wb.sel <= "11111111";
-		r.wb.we  <= '0';
+                    -- We only ever do reads on wishbone
+                    r.wb.dat <= (others => '0');
+                    r.wb.sel <= "11111111";
+                    r.wb.we  <= '0';
 
-		-- Not useful normally but helps avoiding tons of sim warnings
-		r.wb.adr <= (others => '0');
+                    -- Not useful normally but helps avoiding tons of sim warnings
+                    r.wb.adr <= (others => '0');
+                elsif INTERFACE_TYPE = "tri" then
+                    r.tri.val       <= '0';
+                    r.tri.rqtype    <= ifill;
+                    r.tri.amo_op    <= op_none;
+                    r.tri.addr      <= (others => '0');
+                    r.tri.threadid  <= '0';
+                    r.tri.nc        <= '0';
+                    r.tri.size      <= size_32B;
+                    r.tri.l1rplway  <= (others => '0');
+                    r.tri.data      <= (others => '0');
+                    r.tri.data_next <= (others => '0');
+                end if;
             else
                 -- Process cache invalidations
                 if inval_in = '1' then
@@ -611,53 +637,80 @@ begin
 			r.store_row <= get_row(req_laddr);
                         r.store_valid <= '1';
 
-			-- Prep for first wishbone read. We calculate the address of
-			-- the start of the cache line and start the WB cycle.
-			--
-			r.wb.adr <= req_laddr(r.wb.adr'left downto 0);
-			r.wb.cyc <= '1';
-			r.wb.stb <= '1';
+            if INTERFACE_TYPE = "wishbone" then
+                -- Prep for first wishbone read. We calculate the address of
+                -- the start of the cache line and start the WB cycle.
+                --
+                r.wb.adr <= req_laddr(r.wb.adr'left downto 0);
+                r.wb.cyc <= '1';
+                r.wb.stb <= '1';
+            elsif INTERFACE_TYPE = "tri" then
+                r.tri.val       <= '1';
+                r.tri.addr      <= "1" & req_laddr(r.tri.addr'left-1 downto 0);
+                r.tri.rqtype    <= ifill;
+                r.tri.nc        <= '0';
+                r.tri.size      <= size_32B;
+                r.tri.l1rplway  <= std_ulogic_vector(to_unsigned(replace_way, 2));
+                r.tri.data      <= (others => '0');
+                r.tri.data_next <= (others => '0');
+            end if;
 
 			-- Track that we had one request sent
 			r.state <= WAIT_ACK;
 		    end if;
 
 		when WAIT_ACK =>
-		    -- Requests are all sent if stb is 0
-		    stbs_done := r.wb.stb = '0';
+            if INTERFACE_TYPE = "wishbone" then
+		        -- Requests are all sent if stb is 0
+		        stbs_done := r.wb.stb = '0';
 
-		    -- If we are still sending requests, was one accepted ?
-		    if wishbone_in.stall = '0' and not stbs_done then
-			-- That was the last word ? We are done sending. Clear
-			-- stb and set stbs_done so we can handle an eventual last
-			-- ack on the same cycle.
-			--
-			if is_last_row_addr(r.wb.adr) then
-			    r.wb.stb <= '0';
-			    stbs_done := true;
-			end if;
+		        -- If we are still sending requests, was one accepted ?
+		        if wishbone_in.stall = '0' and not stbs_done then
+			        -- That was the last word ? We are done sending. Clear
+			        -- stb and set stbs_done so we can handle an eventual last
+			        -- ack on the same cycle.
+			        --
+			        if is_last_row_addr(r.wb.adr) then
+			            r.wb.stb <= '0';
+			            stbs_done := true;
+			        end if;
 
-			-- Calculate the next row address
-			r.wb.adr <= next_row_addr(r.wb.adr);
-		    end if;
+			        -- Calculate the next row address
+			        r.wb.adr <= next_row_addr(r.wb.adr);
+		        end if;
 
-		    -- Incoming acks processing
-		    if wishbone_in.ack = '1' then
-			-- Check for completion
-			if stbs_done and is_last_row(r.store_row) then
-			    -- Complete wishbone cycle
-			    r.wb.cyc <= '0';
+		        -- Incoming acks processing
+		        if wishbone_in.ack = '1' then
+			        -- Check for completion
+			        if stbs_done and is_last_row(r.store_row) then
+			            -- Complete wishbone cycle
+			            r.wb.cyc <= '0';
 
-			    -- Cache line is now valid
-			    cache_valids(r.store_index)(r.store_way) <= r.store_valid and not inval_in;
+			            -- Cache line is now valid
+			            cache_valids(r.store_index)(r.store_way) <= r.store_valid and not inval_in;
 
-			    -- We are done
-			    r.state <= IDLE;
-			end if;
+			            -- We are done
+			            r.state <= IDLE;
+			        end if;
 
-			-- Increment store row counter
-			r.store_row <= next_row(r.store_row);
-		    end if;
+			        -- Increment store row counter
+			        r.store_row <= next_row(r.store_row);
+		        end if;
+            elsif INTERFACE_TYPE = "tri" then
+                if tri_trans_out.val = '1' and tri_trans_in.header_ack = '1' then
+                    r.tri.val <= '0';
+                end if;
+
+                if tri_resp_in.val = '1' and (tri_resp_in.return_type = ifill1) then
+                    stbs_done := true;
+
+			        -- Cache line is now valid
+			        cache_valids(r.store_index)(r.store_way) <= r.store_valid and not inval_in;
+
+			        -- We are done
+			        r.state <= IDLE;
+			    end if;
+            end if;
 		end case;
 	    end if;
 

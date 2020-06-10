@@ -1,6 +1,7 @@
 decode_types.vhdl
 common.vhdl
 wishbone_types.vhdl
+pmesh_types.vhdl
 utils.vhdl
 insn_helpers.vhdl
 fetch1.vhdl
@@ -25,6 +26,7 @@ execute1.vhdl
 loadstore1.vhdl
 plru.vhdl
 cache_ram.vhdl
+mmu.vhdl
 dcache.vhdl
 writeback.vhdl
 icache.vhdl

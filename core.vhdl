@@ -5,6 +5,7 @@ use ieee.numeric_std.all;
 library work;
 use work.common.all;
 use work.wishbone_types.all;
+use work.pmesh_types.all;
 
 entity core is
     generic (
@@ -26,6 +27,12 @@ entity core is
 
         wishbone_data_in  : in wishbone_slave_out;
         wishbone_data_out : out wishbone_master_out;
+
+    tri_insn_trans_out : out tri_trans_core_l15;
+    tri_insn_trans_in  : in tri_trans_l15_core;
+
+    tri_insn_resp_out : out tri_resp_core_l15;
+    tri_insn_resp_in  : in tri_resp_l15_core;
 
 	dmi_addr	: in std_ulogic_vector(3 downto 0);
 	dmi_din	        : in std_ulogic_vector(63 downto 0);
@@ -191,9 +198,10 @@ begin
     icache_0: entity work.icache
         generic map(
             SIM => SIM,
-            LINE_SIZE => 64,
-            NUM_LINES => 32,
-	    NUM_WAYS => 2
+            LINE_SIZE => 32,
+            NUM_LINES => 128,
+            NUM_WAYS => 4,
+            INTERFACE_TYPE => "tri"
             )
         port map(
             clk => clk,
@@ -205,7 +213,13 @@ begin
             inval_in => dbg_icache_rst or ex1_icache_inval,
 	    stall_out => icache_stall_out,
             wishbone_out => wishbone_insn_out,
-            wishbone_in => wishbone_insn_in
+            wishbone_in => wishbone_insn_in,
+
+            tri_trans_out => tri_insn_trans_out,
+            tri_trans_in  => tri_insn_trans_in,
+
+            tri_resp_out => tri_insn_resp_out,
+            tri_resp_in  => tri_insn_resp_in
             );
 
     fetch2_0: entity work.fetch2
