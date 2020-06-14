@@ -17,11 +17,18 @@ use work.utils.all;
 use work.common.all;
 use work.helpers.all;
 use work.wishbone_types.all;
+use work.pmesh_types.all;
 
 entity dcache is
     generic (
         -- Line size in bytes
         LINE_SIZE : positive := 64;
+        -- BRAM organisation: We never access more than wishbone_data_bits at
+        -- a time so to save resources we make the array only that wide, and
+        -- use consecutive indices for to make a cache "line"
+        --
+        -- ROW_SIZE is the width in bytes of the BRAM (based on WB, so 64-bits)
+        ROW_SIZE  : natural := wishbone_data_bits / 8;
         -- Number of lines in a set
         NUM_LINES : positive := 32;
         -- Number of ways
@@ -31,7 +38,9 @@ entity dcache is
         -- L1 DTLB number of sets
         TLB_NUM_WAYS : positive := 2;
         -- L1 DTLB log_2(page_size)
-        TLB_LG_PGSZ : positive := 12
+        TLB_LG_PGSZ : positive := 12;
+        -- Type of dcache bus to use
+        INTERFACE_TYPE : string := "wishbone"
         );
     port (
         clk          : in std_ulogic;
@@ -46,17 +55,18 @@ entity dcache is
 	stall_out    : out std_ulogic;
 
         wishbone_out : out wishbone_master_out;
-        wishbone_in  : in wishbone_slave_out
+        wishbone_in  : in wishbone_slave_out;
+
+        tri_trans_out : out tri_trans_core_l15;
+        tri_trans_in  : in tri_trans_l15_core;
+
+        tri_resp_out : out tri_resp_core_l15;
+        tri_resp_in  : in tri_resp_l15_core
         );
 end entity dcache;
 
 architecture rtl of dcache is
-    -- BRAM organisation: We never access more than wishbone_data_bits at
-    -- a time so to save resources we make the array only that wide, and
-    -- use consecutive indices for to make a cache "line"
-    --
-    -- ROW_SIZE is the width in bytes of the BRAM (based on WB, so 64-bits)
-    constant ROW_SIZE      : natural := wishbone_data_bits / 8;
+    constant ROW_SIZE_BITS : natural := ROW_SIZE*8;
     -- ROW_PER_LINE is the number of row (wishbone transactions) in a line
     constant ROW_PER_LINE  : natural := LINE_SIZE / ROW_SIZE;
     -- BRAM_ROWS is the number of rows in BRAM needed to represent the full
@@ -100,7 +110,7 @@ architecture rtl of dcache is
     subtype way_t is integer range 0 to NUM_WAYS-1;
 
     -- The cache data BRAM organized as described above for each way
-    subtype cache_row_t is std_ulogic_vector(wishbone_data_bits-1 downto 0);
+    subtype cache_row_t is std_ulogic_vector(ROW_SIZE_BITS-1 downto 0);
 
     -- The cache tags LUTRAM has a row per set. Vivado is a pain and will
     -- not handle a clean (commented) definition of the cache tags as a 3d
@@ -240,6 +250,7 @@ architecture rtl of dcache is
 	-- Cache miss state (reload state machine)
         state            : state_t;
         wb               : wishbone_master_out;
+        tri              : tri_trans_core_l15;
 	store_way        : way_t;
 	store_row        : row_t;
         store_index      : index_t;
@@ -771,6 +782,8 @@ begin
 
     -- Wire up wishbone request latch out of stage 1
     wishbone_out <= r1.wb;
+    tri_trans_out <= r1.tri;
+    tri_resp_out.req_ack <= tri_resp_in.val;
 
     -- Generate stalls from stage 1 state machine
     stall_out <= '1' when r1.state /= IDLE else '0';
@@ -817,7 +830,11 @@ begin
 
 	-- The mux on d_out.data defaults to the normal load hit case.
 	d_out.valid <= '0';
-	d_out.data <= cache_out(r1.hit_way);
+    if r0.req.addr(3) = '0' then
+        d_out.data <= cache_out(r1.hit_way)(63 downto 0);
+    elsif r0.req.addr(3) = '1' then
+        d_out.data <= cache_out(r1.hit_way)(127 downto 64);
+    end if;
         d_out.store_done <= '0';
         d_out.error <= '0';
         d_out.cache_paradox <= '0';
@@ -825,7 +842,11 @@ begin
         -- Outputs to MMU
         m_out.done <= r1.tlbie_done;
         m_out.err <= '0';
-        m_out.data <= cache_out(r1.hit_way);
+    if r0.req.addr(3) = '0' then
+        m_out.data <= cache_out(r1.hit_way)(63 downto 0);
+    elsif r0.req.addr(3) = '1' then
+        m_out.data <= cache_out(r1.hit_way)(127 downto 64);
+    end if;
 
 	-- We have a valid load or store hit or we just completed a slow
 	-- op such as a load miss, a NC load or a store
@@ -921,7 +942,7 @@ begin
 	signal rd_addr  : std_ulogic_vector(ROW_BITS-1 downto 0);
 	signal do_write : std_ulogic;
 	signal wr_addr  : std_ulogic_vector(ROW_BITS-1 downto 0);
-	signal wr_data  : std_ulogic_vector(wishbone_data_bits-1 downto 0);
+	signal wr_data  : std_ulogic_vector(ROW_SIZE_BITS-1 downto 0);
 	signal wr_sel   : std_ulogic_vector(ROW_SIZE-1 downto 0);
 	signal wr_sel_m : std_ulogic_vector(ROW_SIZE-1 downto 0);
 	signal dout     : cache_row_t;
@@ -929,7 +950,7 @@ begin
 	way: entity work.cache_ram
 	    generic map (
 		ROW_BITS => ROW_BITS,
-		WIDTH => wishbone_data_bits,
+		WIDTH => ROW_SIZE_BITS,
 		ADD_BUF => true
 		)
 	    port map (
@@ -960,14 +981,14 @@ begin
 	    if r1.state = IDLE then
 		-- In IDLE state, the only write path is the store-hit update case
 		wr_addr  <= std_ulogic_vector(to_unsigned(req_row, ROW_BITS));
-		wr_data  <= r0.req.data;
-		wr_sel   <= r0.req.byte_sel;
+		wr_data  <= tri_resp_in.data_0 & tri_resp_in.data_1;
+		wr_sel   <= (others => '1');
 	    else
 		-- Otherwise, we might be doing a reload or a DCBZ
                 if r1.req.dcbz = '1' then
                     wr_data <= (others => '0');
                 else
-                    wr_data <= wishbone_in.dat;
+                    wr_data <= (tri_resp_in.data_0 & tri_resp_in.data_1);
                 end if;
 		wr_sel  <= (others => '1');
 		wr_addr <= std_ulogic_vector(to_unsigned(r1.store_row, ROW_BITS));
@@ -976,7 +997,7 @@ begin
 	    -- The two actual write cases here
 	    do_write <= '0';
 	    reloading := r1.state = RELOAD_WAIT_ACK;
-	    if reloading and wishbone_in.ack = '1' and r1.store_way = i then
+	    if reloading and tri_resp_in.val = '1' and (tri_resp_in.return_type = ifill1) and r1.store_way = i then
 		do_write <= '1';
 	    end if;
 	    if req_op = OP_STORE_HIT and req_hit_way = i and cancel_store = '0' and
@@ -1064,19 +1085,32 @@ begin
         if rising_edge(clk) then
 	    -- On reset, clear all valid bits to force misses
             if rst = '1' then
-		for i in index_t loop
-		    cache_valids(i) <= (others => '0');
-		end loop;
+                for i in index_t loop
+                    cache_valids(i) <= (others => '0');
+                end loop;
                 r1.state <= IDLE;
-		r1.slow_valid <= '0';
-                r1.wb.cyc <= '0';
-                r1.wb.stb <= '0';
+                r1.slow_valid <= '0';
+                if INTERFACE_TYPE = "wishbone" then
+                    r1.wb.cyc <= '0';
+                    r1.wb.stb <= '0';
 
-		-- Not useful normally but helps avoiding tons of sim warnings
-		r1.wb.adr <= (others => '0');
+                    -- Not useful normally but helps avoiding tons of sim warnings
+                    r1.wb.adr <= (others => '0');
+                elsif INTERFACE_TYPE = "tri" then
+                    r1.tri.val       <= '0';
+                    r1.tri.rqtype    <= load;
+                    r1.tri.amo_op    <= op_none;
+                    r1.tri.addr      <= (others => '0');
+                    r1.tri.threadid  <= '0';
+                    r1.tri.nc        <= '0';
+                    r1.tri.size      <= size_16B;
+                    r1.tri.l1rplway  <= (others => '0');
+                    r1.tri.data      <= (others => '0');
+                    r1.tri.data_next <= (others => '0');
+                end if;
             else
-		-- One cycle pulses reset
-		r1.slow_valid <= '0';
+                -- One cycle pulses reset
+                r1.slow_valid <= '0';
                 r1.stcx_fail <= '0';
 
 		-- Main state machine
@@ -1111,35 +1145,73 @@ begin
 			r1.store_way <= replace_way;
 			r1.store_row <= get_row(req_laddr);
 
-			-- Prep for first wishbone read. We calculate the address of
-			-- the start of the cache line and start the WB cycle
-			--
-			r1.wb.adr <= req_laddr(r1.wb.adr'left downto 0);
-			r1.wb.sel <= (others => '1');
-			r1.wb.we  <= '0';
-			r1.wb.cyc <= '1';
-			r1.wb.stb <= '1';
+            if INTERFACE_TYPE = "wishbone" then
+			    -- Prep for first wishbone read. We calculate the address of
+			    -- the start of the cache line and start the WB cycle
+			    --
+			    r1.wb.adr <= req_laddr(r1.wb.adr'left downto 0);
+			    r1.wb.sel <= (others => '1');
+			    r1.wb.we  <= '0';
+			    r1.wb.cyc <= '1';
+			    r1.wb.stb <= '1';
+            elsif INTERFACE_TYPE = "tri" then
+                r1.tri.val       <= '1';
+                r1.tri.addr      <= "1" & req_laddr(r1.tri.addr'left-1 downto 0);
+                r1.tri.rqtype    <= load;
+                r1.tri.nc        <= '0';
+                r1.tri.size      <= size_16B;
+                r1.tri.l1rplway  <= std_ulogic_vector(to_unsigned(replace_way, 2));
+                r1.tri.data      <= (others => '0');
+                r1.tri.data_next <= (others => '0');
+            end if;
 
 			-- Track that we had one request sent
 			r1.state <= RELOAD_WAIT_ACK;
 
-		    when OP_LOAD_NC =>
+            when OP_LOAD_NC =>
+                if INTERFACE_TYPE = "wishbone" then
                         r1.wb.sel <= r0.req.byte_sel;
                         r1.wb.adr <= ra(r1.wb.adr'left downto 3) & "000";
                         r1.wb.cyc <= '1';
                         r1.wb.stb <= '1';
-			r1.wb.we <= '0';
+                        r1.wb.we <= '0';
+                elsif INTERFACE_TYPE = "tri" then
+                -- NC Load - need to turn r0.req.byte_sel into a correct transaction
+                    r1.tri.val       <= '1';
+                    r1.tri.addr      <= "1" & req_laddr(r1.tri.addr'left-1 downto 0);
+                    r1.tri.rqtype    <= load;
+                    r1.tri.nc        <= '1';
+                    r1.tri.size      <= size_1B;
+                    r1.tri.l1rplway  <= std_ulogic_vector(to_unsigned(replace_way, 2));
+                    r1.tri.data      <= (others => '0');
+                    r1.tri.data_next <= (others => '0');
+                end if;
 			r1.state <= NC_LOAD_WAIT_ACK;
 
                     when OP_STORE_HIT | OP_STORE_MISS =>
                         if r0.req.dcbz = '0' then
-                            r1.wb.sel <= r0.req.byte_sel;
-                            r1.wb.adr <= ra(r1.wb.adr'left downto 3) & "000";
-                            r1.wb.dat <= r0.req.data;
+                            if INTERFACE_TYPE = "wishbone" then
+                                r1.wb.sel <= r0.req.byte_sel;
+                                r1.wb.adr <= ra(r1.wb.adr'left downto 3) & "000";
+                                r1.wb.dat <= r0.req.data;
+                            elsif INTERFACE_TYPE = "tri" then
+                            -- NC Load - need to turn r0.req.byte_sel into a correct transaction
+                                r1.tri.addr      <= "1" & req_laddr(r1.tri.addr'left-1 downto 0);
+                                r1.tri.nc        <= '1';
+                                r1.tri.size      <= size_8B;
+                                r1.tri.l1rplway  <= std_ulogic_vector(to_unsigned(replace_way, 2));
+                                r1.tri.data      <= r0.req.data;
+                                r1.tri.data_next <= r0.req.data;
+                            end if;
                             if cancel_store = '0' then
-                                r1.wb.cyc <= '1';
-                                r1.wb.stb <= '1';
-                                r1.wb.we <= '1';
+                                if INTERFACE_TYPE = "wishbone" then
+                                    r1.wb.cyc <= '1';
+                                    r1.wb.stb <= '1';
+                                    r1.wb.we <= '1';
+                                elsif INTERFACE_TYPE = "tri" then
+                                    r1.tri.val       <= '1';
+                                    r1.tri.rqtype    <= store;
+                                end if;
                                 r1.state <= STORE_WAIT_ACK;
                             else
                                 r1.stcx_fail <= '1';
@@ -1169,13 +1241,25 @@ begin
                                 end loop;
                             end if;
 
-                            -- Set up for wishbone writes
-                            r1.wb.adr <= req_laddr(r1.wb.adr'left downto 0);
-                            r1.wb.sel <= (others => '1');
-                            r1.wb.we <= '1';
-                            r1.wb.dat <= (others => '0');
-                            r1.wb.cyc <= '1';
-                            r1.wb.stb <= '1';
+                            if INTERFACE_TYPE = "wishbone" then
+                                -- Set up for wishbone writes
+                                r1.wb.adr <= req_laddr(r1.wb.adr'left downto 0);
+                                r1.wb.sel <= (others => '1');
+                                r1.wb.we <= '1';
+                                r1.wb.dat <= (others => '0');
+                                r1.wb.cyc <= '1';
+                                r1.wb.stb <= '1';
+                            elsif INTERFACE_TYPE = "tri" then
+                            -- NC Load - need to turn r0.req.byte_sel into a correct transaction
+                                r1.tri.val       <= '1';
+                                r1.tri.addr      <= "1" & req_laddr(r1.tri.addr'left-1 downto 0);
+                                r1.tri.rqtype    <= store;
+                                r1.tri.nc        <= '0';
+                                r1.tri.size      <= size_16B;
+                                r1.tri.l1rplway  <= std_ulogic_vector(to_unsigned(replace_way, 2));
+                                r1.tri.data      <= (others => '0');
+                                r1.tri.data_next <= (others => '0');
+                            end if;
 
                             -- Handle the rest like a load miss
                             r1.state <= RELOAD_WAIT_ACK;
@@ -1189,79 +1273,134 @@ begin
 		    end case;
 
 		when RELOAD_WAIT_ACK =>
-		    -- Requests are all sent if stb is 0
-		    stbs_done := r1.wb.stb = '0';
+            if INTERFACE_TYPE = "wishbone" then
+                -- Requests are all sent if stb is 0
+                stbs_done := r1.wb.stb = '0';
 
-		    -- If we are still sending requests, was one accepted ?
-		    if wishbone_in.stall = '0' and not stbs_done then
-			-- That was the last word ? We are done sending. Clear
-			-- stb and set stbs_done so we can handle an eventual last
-			-- ack on the same cycle.
-			--
-			if is_last_row_addr(r1.wb.adr) then
-			    r1.wb.stb <= '0';
-			    stbs_done := true;
-			end if;
+                -- If we are still sending requests, was one accepted ?
+                if wishbone_in.stall = '0' and not stbs_done then
+        	        -- That was the last word ? We are done sending. Clear
+        	        -- stb and set stbs_done so we can handle an eventual last
+        	        -- ack on the same cycle.
+        	        --
+        	        if is_last_row_addr(r1.wb.adr) then
+        	            r1.wb.stb <= '0';
+        	            stbs_done := true;
+        	        end if;
+        
+        	        -- Calculate the next row address
+        	        r1.wb.adr <= next_row_addr(r1.wb.adr);
+                end if;
+        
+                -- Incoming acks processing
+                if wishbone_in.ack = '1' then
+        	        -- Is this the data we were looking for ? Latch it so
+        	        -- we can respond later. We don't currently complete the
+        	        -- pending miss request immediately, we wait for the
+        	        -- whole line to be loaded. The reason is that if we
+        	        -- did, we would potentially get new requests in while
+        	        -- not idle, which we don't currently know how to deal
+        	        -- with.
+        	        --
+        	        if r1.store_row = get_row(r1.req.addr) and r1.req.dcbz = '0' then
+        	            r1.slow_data <= wishbone_in.dat;
+        	        end if;
+        
+        	        -- Check for completion
+        	        if stbs_done and is_last_row(r1.store_row) then
+        	            -- Complete wishbone cycle
+        	            r1.wb.cyc <= '0';
+        
+        	            -- Cache line is now valid
+        	            cache_valids(r1.store_index)(r1.store_way) <= '1';
+        
+                                    -- Don't complete and go idle until next cycle, in
+                                    -- case the next request is for the last dword of
+                                    -- the cache line we just loaded.
+                                    r1.state <= FINISH_LD_MISS;
+        	        end if;
+        
+        	        -- Increment store row counter
+        	        r1.store_row <= next_row(r1.store_row);
+                end if;
+            elsif INTERFACE_TYPE = "tri" then
+                if tri_trans_out.val = '1' and tri_trans_in.header_ack = '1' then
+                    r1.tri.val <= '0';
+                end if;
 
-			-- Calculate the next row address
-			r1.wb.adr <= next_row_addr(r1.wb.adr);
-		    end if;
+                if tri_resp_in.val = '1' and (tri_resp_in.return_type = load) then
+                    stbs_done := true;
 
-		    -- Incoming acks processing
-		    if wishbone_in.ack = '1' then
-			-- Is this the data we were looking for ? Latch it so
-			-- we can respond later. We don't currently complete the
-			-- pending miss request immediately, we wait for the
-			-- whole line to be loaded. The reason is that if we
-			-- did, we would potentially get new requests in while
-			-- not idle, which we don't currently know how to deal
-			-- with.
-			--
-			if r1.store_row = get_row(r1.req.addr) and r1.req.dcbz = '0' then
-			    r1.slow_data <= wishbone_in.dat;
-			end if;
+        	        -- Is this the data we were looking for ? Latch it so
+        	        -- we can respond later. We don't currently complete the
+        	        -- pending miss request immediately, we wait for the
+        	        -- whole line to be loaded. The reason is that if we
+        	        -- did, we would potentially get new requests in while
+        	        -- not idle, which we don't currently know how to deal
+        	        -- with.
+        	        --
+        	        if r1.store_row = get_row(r1.req.addr) and r1.req.dcbz = '0' then
+                        if r1.req.addr(3) = '0' then
+        	                r1.slow_data <= tri_resp_in.data_0;
+                        else
+        	                r1.slow_data <= tri_resp_in.data_1;
+                        end if;
+        	        end if;
 
-			-- Check for completion
-			if stbs_done and is_last_row(r1.store_row) then
-			    -- Complete wishbone cycle
-			    r1.wb.cyc <= '0';
+			        -- Cache line is now valid
+			        cache_valids(r1.store_index)(r1.store_way) <= '1';
 
-			    -- Cache line is now valid
-			    cache_valids(r1.store_index)(r1.store_way) <= '1';
+                    -- Don't complete and go idle until next cycle, in
+                    -- case the next request is for the last dword of
+                    -- the cache line we just loaded.
+                    r1.state <= FINISH_LD_MISS;
 
-                            -- Don't complete and go idle until next cycle, in
-                            -- case the next request is for the last dword of
-                            -- the cache line we just loaded.
-                            r1.state <= FINISH_LD_MISS;
-			end if;
-
-			-- Increment store row counter
-			r1.store_row <= next_row(r1.store_row);
-		    end if;
-
-                when FINISH_LD_MISS =>
-                    -- Write back the load data that we got
-                    r1.slow_valid <= '1';
+			    end if;
+            end if;
+        
+        when FINISH_LD_MISS =>
+             -- Write back the load data that we got
+             r1.slow_valid <= '1';
+             r1.state <= IDLE;
+             report "completing miss !";
+        
+        when STORE_WAIT_ACK | NC_LOAD_WAIT_ACK =>
+            if INTERFACE_TYPE = "wishbone" then
+                -- Clear stb when slave accepted request
+                if wishbone_in.stall = '0' then
+        	        r1.wb.stb <= '0';
+                end if;
+        
+                -- Got ack ? complete.
+                if wishbone_in.ack = '1' then
+        	        if r1.state = NC_LOAD_WAIT_ACK then
+        	            r1.slow_data <= wishbone_in.dat;
+        	        end if;
                     r1.state <= IDLE;
-                    report "completing miss !";
+        	        r1.slow_valid <= '1';
+        	        r1.wb.cyc <= '0';
+        	        r1.wb.stb <= '0';
+                end if;
+            elsif INTERFACE_TYPE = "tri" then
+                if tri_trans_out.val = '1' and tri_trans_in.header_ack = '1' then
+                    r1.tri.val <= '0';
+                end if;
 
-                when STORE_WAIT_ACK | NC_LOAD_WAIT_ACK =>
-		    -- Clear stb when slave accepted request
-                    if wishbone_in.stall = '0' then
-			r1.wb.stb <= '0';
-		    end if;
-
-		    -- Got ack ? complete.
-		    if wishbone_in.ack = '1' then
-			if r1.state = NC_LOAD_WAIT_ACK then
-			    r1.slow_data <= wishbone_in.dat;
-			end if;
-                        r1.state <= IDLE;
-			r1.slow_valid <= '1';
-			r1.wb.cyc <= '0';
-			r1.wb.stb <= '0';
-		    end if;
-                end case;
+                if tri_resp_in.val = '1' and (tri_resp_in.return_type = load) and (tri_resp_in.nc = '1') then
+                    if r1.req.addr(3) = '0' then
+        	            r1.slow_data <= tri_resp_in.data_0;
+                    else
+        	            r1.slow_data <= tri_resp_in.data_1;
+                    end if;
+                    r1.state <= IDLE;
+        	        r1.slow_valid <= '1';
+                end if;
+                if tri_resp_in.val = '1' and (tri_resp_in.return_type = store_ack) then
+                    r1.state <= IDLE;
+        	        r1.slow_valid <= '1';
+                end if;
+            end if;
+        end case;
 	    end if;
 	end if;
     end process;

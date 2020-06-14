@@ -30,6 +30,7 @@ mmu.vhdl
 dcache.vhdl
 writeback.vhdl
 icache.vhdl
+tri_arbiter.vhdl
 core_debug.vhdl
 core.vhdl
 core_wrapper.vhdl

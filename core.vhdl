@@ -28,11 +28,11 @@ entity core is
         wishbone_data_in  : in wishbone_slave_out;
         wishbone_data_out : out wishbone_master_out;
 
-    tri_insn_trans_out : out tri_trans_core_l15;
-    tri_insn_trans_in  : in tri_trans_l15_core;
+    tri_trans_out : out tri_trans_core_l15;
+    tri_trans_in  : in tri_trans_l15_core;
 
-    tri_insn_resp_out : out tri_resp_core_l15;
-    tri_insn_resp_in  : in tri_resp_l15_core;
+    tri_resp_out : out tri_resp_core_l15;
+    tri_resp_in  : in tri_resp_l15_core;
 
 	dmi_addr	: in std_ulogic_vector(3 downto 0);
 	dmi_din	        : in std_ulogic_vector(63 downto 0);
@@ -55,6 +55,10 @@ architecture behave of core is
     signal fetch1_to_icache : Fetch1ToIcacheType;
     signal icache_to_fetch2 : IcacheToFetch2Type;
     signal mmu_to_icache : MmuToIcacheType;
+    signal tri_insn_trans_out: tri_trans_core_l15;
+    signal tri_insn_trans_in : tri_trans_l15_core;
+    signal tri_insn_resp_out : tri_resp_core_l15;
+    signal tri_insn_resp_in  : tri_resp_l15_core;
 
     -- decode signals
     signal decode1_to_decode2: Decode1ToDecode2Type;
@@ -86,6 +90,11 @@ architecture behave of core is
     signal dcache_to_loadstore1: DcacheToLoadstore1Type;
     signal mmu_to_dcache: MmuToDcacheType;
     signal dcache_to_mmu: DcacheToMmuType;
+    signal tri_data_trans_out: tri_trans_core_l15;
+    signal tri_data_trans_in : tri_trans_l15_core;
+    signal tri_data_resp_out : tri_resp_core_l15;
+    signal tri_data_resp_in  : tri_resp_l15_core;
+
 
     -- local signals
     signal fetch1_stall_in : std_ulogic;
@@ -199,6 +208,7 @@ begin
         generic map(
             SIM => SIM,
             LINE_SIZE => 32,
+            ROW_SIZE => 32,
             NUM_LINES => 128,
             NUM_WAYS => 4,
             INTERFACE_TYPE => "tri"
@@ -344,9 +354,11 @@ begin
 
     dcache_0: entity work.dcache
         generic map(
-            LINE_SIZE => 64,
-            NUM_LINES => 32,
-	    NUM_WAYS => 2
+            LINE_SIZE => 16,
+            ROW_SIZE => 16,
+            NUM_LINES => 128,
+            NUM_WAYS => 4,
+            INTERFACE_TYPE => "tri"
             )
         port map (
             clk => clk,
@@ -357,7 +369,13 @@ begin
             m_out => dcache_to_mmu,
             stall_out => dcache_stall_out,
             wishbone_in => wishbone_data_in,
-            wishbone_out => wishbone_data_out
+            wishbone_out => wishbone_data_out,
+
+            tri_trans_out => tri_data_trans_out,
+            tri_trans_in  => tri_data_trans_in,
+
+            tri_resp_out => tri_data_resp_out,
+            tri_resp_in  => tri_data_resp_in
             );
 
     writeback_0: entity work.writeback
@@ -393,5 +411,26 @@ begin
             dbg_gpr_data => dbg_gpr_data,
 	    terminated_out => terminated_out
 	    );
+
+    tri_arbiter0: entity work.tri_arbiter
+    port map (
+        clk => clk,
+        rst => rst_icache,
+
+        tri_insn_trans_out => tri_insn_trans_out,
+        tri_insn_trans_in  => tri_insn_trans_in,
+        tri_insn_resp_out  => tri_insn_resp_out,
+        tri_insn_resp_in   => tri_insn_resp_in,
+
+        tri_data_trans_out => tri_data_trans_out,
+        tri_data_trans_in  => tri_data_trans_in,
+        tri_data_resp_out  => tri_data_resp_out,
+        tri_data_resp_in   => tri_data_resp_in,
+
+        tri_trans_out => tri_trans_out,
+        tri_trans_in  => tri_trans_in,
+        tri_resp_out  => tri_resp_out,
+        tri_resp_in   => tri_resp_in
+        );
 
 end behave;
