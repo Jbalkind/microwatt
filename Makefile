@@ -42,7 +42,7 @@ all = core_tb icache_tb dcache_tb multiply_tb dmi_dtm_tb divider_tb \
 all: $(all)
 
 core_files = decode_types.vhdl common.vhdl wishbone_types.vhdl fetch1.vhdl \
-	fetch2.vhdl utils.vhdl plru.vhdl cache_ram.vhdl icache.vhdl \
+	utils.vhdl plru.vhdl cache_ram.vhdl icache.vhdl \
 	decode1.vhdl helpers.vhdl insn_helpers.vhdl gpr_hazard.vhdl \
 	cr_hazard.vhdl control.vhdl decode2.vhdl register_file.vhdl \
 	cr_file.vhdl crhelpers.vhdl ppc_fx_insns.vhdl rotator.vhdl \
@@ -55,8 +55,9 @@ soc_files = $(core_files) wishbone_arbiter.vhdl wishbone_bram_wrapper.vhdl sync_
 	spi_rxtx.vhdl spi_flash_ctrl.vhdl
 
 
-soc_sim_files = $(soc_files) sim_console.vhdl sim_uart.vhdl sim_bram_helpers.vhdl \
-	sim_bram.vhdl sim_jtag_socket.vhdl sim_jtag.vhdl dmi_dtm_xilinx.vhdl
+soc_sim_files = $(soc_files) sim_console.vhdl sim_pp_uart.vhdl sim_bram_helpers.vhdl \
+	sim_bram.vhdl sim_jtag_socket.vhdl sim_jtag.vhdl dmi_dtm_xilinx.vhdl \
+	sim_16550_uart.vhdl
 
 soc_sim_c_files = sim_vhpi_c.c sim_bram_helpers_c.c sim_console_c.c \
 	sim_jtag_socket_c.c

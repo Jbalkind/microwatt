@@ -27,9 +27,11 @@ package common is
     constant SPR_DSISR  : spr_num_t := 18;
     constant SPR_DAR    : spr_num_t := 19;
     constant SPR_TB     : spr_num_t := 268;
+    constant SPR_TBU    : spr_num_t := 269;
     constant SPR_DEC    : spr_num_t := 22;
     constant SPR_SRR0   : spr_num_t := 26;
     constant SPR_SRR1   : spr_num_t := 27;
+    constant SPR_CFAR   : spr_num_t := 28;
     constant SPR_HSRR0  : spr_num_t := 314;
     constant SPR_HSRR1  : spr_num_t := 315;
     constant SPR_SPRG0  : spr_num_t := 272;
@@ -78,13 +80,23 @@ package common is
 
     type irq_state_t is (WRITE_SRR0, WRITE_SRR1);
 
+    -- For now, fixed 16 sources, make this either a parametric
+    -- package of some sort or an unconstrainted array.
+    type ics_to_icp_t is record
+        -- Level interrupts only, ICS just keeps prsenting the
+        -- highest priority interrupt. Once handling edge, something
+        -- smarter involving handshake & reject support will be needed
+        src : std_ulogic_vector(3 downto 0);
+        pri : std_ulogic_vector(7 downto 0);
+    end record;
+
     -- This needs to die...
     type ctrl_t is record
 	tb: std_ulogic_vector(63 downto 0);
 	dec: std_ulogic_vector(63 downto 0);
 	msr: std_ulogic_vector(63 downto 0);
+        cfar: std_ulogic_vector(63 downto 0);
 	irq_state : irq_state_t;
-	irq_nia: std_ulogic_vector(63 downto 0);
 	srr1: std_ulogic_vector(63 downto 0);
     end record;
 
@@ -93,26 +105,17 @@ package common is
         virt_mode : std_ulogic;
         priv_mode : std_ulogic;
 	stop_mark: std_ulogic;
+        sequential: std_ulogic;
 	nia: std_ulogic_vector(63 downto 0);
     end record;
 
-    type IcacheToFetch2Type is record
+    type IcacheToDecode1Type is record
 	valid: std_ulogic;
 	stop_mark: std_ulogic;
         fetch_failed: std_ulogic;
 	nia: std_ulogic_vector(63 downto 0);
 	insn: std_ulogic_vector(31 downto 0);
     end record;
-
-    type Fetch2ToDecode1Type is record
-	valid: std_ulogic;
-	stop_mark : std_ulogic;
-        fetch_failed: std_ulogic;
-	nia: std_ulogic_vector(63 downto 0);
-	insn: std_ulogic_vector(31 downto 0);
-    end record;
-    constant Fetch2ToDecode1Init : Fetch2ToDecode1Type := (valid => '0', stop_mark => '0', fetch_failed => '0',
-                                                           nia => (others => '0'), insn => (others => '0'));
 
     type Decode1ToDecode2Type is record
 	valid: std_ulogic;
@@ -122,8 +125,16 @@ package common is
 	ispr1: gspr_index_t; -- (G)SPR used for branch condition (CTR) or mfspr
 	ispr2: gspr_index_t; -- (G)SPR used for branch target (CTR, LR, TAR)
 	decode: decode_rom_t;
+        br_pred: std_ulogic; -- Branch was predicted to be taken
     end record;
-    constant Decode1ToDecode2Init : Decode1ToDecode2Type := (valid => '0', stop_mark => '0', nia => (others => '0'), insn => (others => '0'), ispr1 => (others => '0'), ispr2 => (others => '0'), decode => decode_rom_init);
+    constant Decode1ToDecode2Init : Decode1ToDecode2Type :=
+        (valid => '0', stop_mark => '0', nia => (others => '0'), insn => (others => '0'),
+         ispr1 => (others => '0'), ispr2 => (others => '0'), decode => decode_rom_init, br_pred => '0');
+
+    type Decode1ToFetch1Type is record
+        redirect     : std_ulogic;
+        redirect_nia : std_ulogic_vector(63 downto 0);
+    end record;
 
     type Decode2ToExecute1Type is record
 	valid: std_ulogic;
@@ -140,6 +151,7 @@ package common is
         bypass_data2: std_ulogic;
         bypass_data3: std_ulogic;
 	cr: std_ulogic_vector(31 downto 0);
+        bypass_cr : std_ulogic;
 	xerc: xer_common_t;
 	lr: std_ulogic;
 	rc: std_ulogic;
@@ -158,23 +170,24 @@ package common is
 	sign_extend : std_ulogic;			-- do we need to sign extend?
 	update : std_ulogic;				-- is this an update instruction?
         reserve : std_ulogic;                           -- set for larx/stcx
+        br_pred : std_ulogic;
     end record;
     constant Decode2ToExecute1Init : Decode2ToExecute1Type :=
 	(valid => '0', unit => NONE, insn_type => OP_ILLEGAL, bypass_data1 => '0', bypass_data2 => '0', bypass_data3 => '0',
-         lr => '0', rc => '0', oe => '0', invert_a => '0',
+         bypass_cr => '0', lr => '0', rc => '0', oe => '0', invert_a => '0',
 	 invert_out => '0', input_carry => ZERO, output_carry => '0', input_cr => '0', output_cr => '0',
-	 is_32bit => '0', is_signed => '0', xerc => xerc_init, reserve => '0',
+	 is_32bit => '0', is_signed => '0', xerc => xerc_init, reserve => '0', br_pred => '0',
          byte_reverse => '0', sign_extend => '0', update => '0', nia => (others => '0'), read_data1 => (others => '0'), read_data2 => (others => '0'), read_data3 => (others => '0'), cr => (others => '0'), insn => (others => '0'), data_len => (others => '0'), others => (others => '0'));
 
     type Execute1ToMultiplyType is record
 	valid: std_ulogic;
-	insn_type: insn_type_t;
-	data1: std_ulogic_vector(64 downto 0);
-	data2: std_ulogic_vector(64 downto 0);
+	data1: std_ulogic_vector(63 downto 0);
+	data2: std_ulogic_vector(63 downto 0);
 	is_32bit: std_ulogic;
+        neg_result: std_ulogic;
     end record;
-    constant Execute1ToMultiplyInit : Execute1ToMultiplyType := (valid => '0', insn_type => OP_ILLEGAL,
-								 is_32bit => '0',
+    constant Execute1ToMultiplyInit : Execute1ToMultiplyType := (valid => '0',
+								 is_32bit => '0', neg_result => '0',
 								 others => (others => '0'));
 
     type Execute1ToDividerType is record
@@ -221,8 +234,8 @@ package common is
         priv_mode: std_ulogic;
 	redirect_nia: std_ulogic_vector(63 downto 0);
     end record;
-    constant Execute1ToFetch1TypeInit : Execute1ToFetch1Type := (redirect => '0', virt_mode => '0',
-                                                                 priv_mode => '0', others => (others => '0'));
+    constant Execute1ToFetch1Init : Execute1ToFetch1Type := (redirect => '0', virt_mode => '0',
+                                                             priv_mode => '0', others => (others => '0'));
 
     type Execute1ToLoadstore1Type is record
 	valid : std_ulogic;
@@ -253,6 +266,7 @@ package common is
                                                                      others => (others => '0'));
 
     type Loadstore1ToExecute1Type is record
+        busy : std_ulogic;
         exception : std_ulogic;
         invalid : std_ulogic;
         perm_error : std_ulogic;
@@ -366,7 +380,7 @@ package common is
 
     type MultiplyToExecute1Type is record
 	valid: std_ulogic;
-	write_reg_data: std_ulogic_vector(63 downto 0);
+	result: std_ulogic_vector(127 downto 0);
         overflow : std_ulogic;
     end record;
     constant MultiplyToExecute1Init : MultiplyToExecute1Type := (valid => '0', overflow => '0',
