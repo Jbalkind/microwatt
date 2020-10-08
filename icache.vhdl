@@ -781,7 +781,7 @@ begin
         variable wstate: std_ulogic;
     begin
         if rising_edge(clk) then
-            if req_is_hit then
+            if (req_is_hit = '1') then
                 lway := req_hit_way;
             else
                 lway := replace_way;

@@ -34,9 +34,9 @@ entity dcache is
         -- Number of ways
         NUM_WAYS  : positive := 4;
         -- L1 DTLB entries per set
-        TLB_SET_SIZE : positive := 64;
+        TLB_SET_SIZE : positive := 32;
         -- L1 DTLB number of sets
-        TLB_NUM_WAYS : positive := 2;
+        TLB_NUM_WAYS : positive := 4;
         -- L1 DTLB log_2(page_size)
         TLB_LG_PGSZ : positive := 12;
         -- Type of dcache bus to use
@@ -934,9 +934,9 @@ begin
             data_fwd := r1.forward_data2;
         end if;
         if r0.req.addr(3) = '0' then
-            data_out <= cache_out(r1.hit_way)(63 downto 0);
+            data_out := cache_out(r1.hit_way)(63 downto 0);
         elsif r0.req.addr(3) = '1' then
-            data_out <= cache_out(r1.hit_way)(127 downto 64);
+            data_out := cache_out(r1.hit_way)(127 downto 64);
         end if;
         for i in 0 to 7 loop
             j := i * 8;
@@ -1081,7 +1081,7 @@ begin
                 -- Write store data to BRAM.  This happens one cycle after the
                 -- store is in r0.
                 wr_data <= tri_resp_in.data_0 & tri_resp_in.data_1;
-                wr_sel  <= r1.req.byte_sel;
+                wr_sel  <= r1.req.byte_sel & r1.req.byte_sel;
 		        -- wr_sel   <= (others => '1'); TODO: fix wr_sel
                 wr_addr <= std_ulogic_vector(to_unsigned(get_row(r1.req.real_addr), ROW_BITS));
                 if i = r1.req.hit_way then
@@ -1273,7 +1273,7 @@ begin
             if INTERFACE_TYPE = "wishbone" then
                     r1.wb.adr <= req.real_addr(r1.wb.adr'left downto 0);
             elsif INTERFACE_TYPE = "tri" then
-                r1.tri.addr      <= "1" & req_laddr(r1.tri.addr'left-1 downto 0);
+                r1.tri.addr      <= "1" & req.real_addr(r1.tri.addr'left-1 downto 0);
             end if;
                     r1.dcbz <= '0';
 
@@ -1336,7 +1336,7 @@ begin
                 elsif INTERFACE_TYPE = "tri" then
                 -- NC Load - need to turn r0.req.byte_sel into a correct transaction
                     r1.tri.val       <= '1';
-                    r1.tri.addr      <= "1" & req_laddr(r1.tri.addr'left-1 downto 0);
+                    r1.tri.addr      <= "1" & req.real_addr(r1.tri.addr'left-1 downto 0);
                     r1.tri.rqtype    <= load;
                     r1.tri.nc        <= '1';
                     r1.tri.size      <= size_1B;
@@ -1458,6 +1458,7 @@ begin
 			-- Increment store row counter
 			r1.store_row <= next_row(r1.store_row);
 
+			end if;
             elsif INTERFACE_TYPE = "tri" then
                 if tri_trans_out.val = '1' and tri_trans_in.header_ack = '1' then
                     r1.tri.val <= '0';
@@ -1482,11 +1483,11 @@ begin
                             r1.slow_valid <= '1';
                             r1.forward_sel <= (others => '1');
                             r1.use_forward1 <= '1';
-                        if r1.req.addr(3) = '0' then
-        	                r1.slow_data <= tri_resp_in.data_0;
-                        else
-        	                r1.slow_data <= tri_resp_in.data_1;
-                        end if;
+                        -- if r1.req.addr(3) = '0' then
+        	            --     r1.slow_data <= tri_resp_in.data_0;
+                        -- else
+        	            --     r1.slow_data <= tri_resp_in.data_1;
+                        -- end if;
 			end if;
 
 			        -- Cache line is now valid
@@ -1494,6 +1495,7 @@ begin
 
                     r1.state <= IDLE;
 			    end if;
+		    end if;
 		    end if;
 
                 when STORE_WAIT_ACK =>
@@ -1544,6 +1546,7 @@ begin
         	        r1.slow_valid <= '1';
                                 r1.write_bram <= '1';
                             end if;
+            end if;
             end if;
 
                 when NC_LOAD_WAIT_ACK =>

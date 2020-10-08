@@ -19,7 +19,7 @@ entity plru is
 end entity plru;
 
 architecture rtl of plru is
-    constant count : positive := 2 ** BITS - 1;
+    constant count : positive := (2 ** BITS) - 1;
     subtype node_t is integer range 0 to count;
     type tree_t is array(node_t) of std_ulogic;
 

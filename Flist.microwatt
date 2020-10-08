@@ -5,7 +5,6 @@ pmesh_types.vhdl
 utils.vhdl
 insn_helpers.vhdl
 fetch1.vhdl
-fetch2.vhdl
 decode1.vhdl
 helpers.vhdl
 gpr_hazard.vhdl

@@ -244,16 +244,6 @@ begin
             log_out => log_data(96 downto 43)
             );
 
-    fetch2_0: entity work.fetch2
-        port map (
-            clk => clk,
-            rst => rst_fetch2,
-            stall_in => fetch2_stall_in,
-            flush_in => flush,
-            i_in => icache_to_fetch2,
-            f_out => fetch2_to_decode1
-            );
-
     icache_stall_in <= decode1_busy;
 
     decode1_0: entity work.decode1
