@@ -34,9 +34,9 @@ entity dcache is
         -- Number of ways
         NUM_WAYS  : positive := 4;
         -- L1 DTLB entries per set
-        TLB_SET_SIZE : positive := 64;
+        TLB_SET_SIZE : positive := 32;
         -- L1 DTLB number of sets
-        TLB_NUM_WAYS : positive := 2;
+        TLB_NUM_WAYS : positive := 4;
         -- L1 DTLB log_2(page_size)
         TLB_LG_PGSZ : positive := 12;
         -- Type of dcache bus to use
@@ -887,7 +887,7 @@ begin
                 -- If it's a load, enable register writeback and switch
                 -- mux accordingly
                 --
-                if r1.req.load then
+                if (r1.req.load = '1') then
                     -- Read data comes from the slow data latch
                     d_out.data <= r1.slow_data;
                 end if;
@@ -981,14 +981,14 @@ begin
 	    if r1.state = IDLE then
 		-- In IDLE state, the only write path is the store-hit update case
 		wr_addr  <= std_ulogic_vector(to_unsigned(req_row, ROW_BITS));
-		wr_data  <= tri_resp_in.data_0 & tri_resp_in.data_1;
+		wr_data  <= tri_resp_in.data_1 & tri_resp_in.data_0;
 		wr_sel   <= (others => '1');
 	    else
 		-- Otherwise, we might be doing a reload or a DCBZ
                 if r1.req.dcbz = '1' then
                     wr_data <= (others => '0');
                 else
-                    wr_data <= (tri_resp_in.data_0 & tri_resp_in.data_1);
+                    wr_data <= (tri_resp_in.data_1 & tri_resp_in.data_0);
                 end if;
 		wr_sel  <= (others => '1');
 		wr_addr <= std_ulogic_vector(to_unsigned(r1.store_row, ROW_BITS));
@@ -1156,7 +1156,7 @@ begin
 			    r1.wb.stb <= '1';
             elsif INTERFACE_TYPE = "tri" then
                 r1.tri.val       <= '1';
-                r1.tri.addr      <= "1" & req_laddr(r1.tri.addr'left-1 downto 0);
+                r1.tri.addr      <= "1" & ra(r1.tri.addr'left-1 downto 0);
                 r1.tri.rqtype    <= load;
                 r1.tri.nc        <= '0';
                 r1.tri.size      <= size_16B;
@@ -1178,7 +1178,7 @@ begin
                 elsif INTERFACE_TYPE = "tri" then
                 -- NC Load - need to turn r0.req.byte_sel into a correct transaction
                     r1.tri.val       <= '1';
-                    r1.tri.addr      <= "1" & req_laddr(r1.tri.addr'left-1 downto 0);
+                    r1.tri.addr      <= "1" & ra(r1.tri.addr'left-1 downto 3) & "000";
                     r1.tri.rqtype    <= load;
                     r1.tri.nc        <= '1';
                     r1.tri.size      <= size_1B;
@@ -1196,7 +1196,7 @@ begin
                                 r1.wb.dat <= r0.req.data;
                             elsif INTERFACE_TYPE = "tri" then
                             -- NC Load - need to turn r0.req.byte_sel into a correct transaction
-                                r1.tri.addr      <= "1" & req_laddr(r1.tri.addr'left-1 downto 0);
+                                r1.tri.addr      <= "1" & ra(r1.tri.addr'left-1 downto 3) & "000";
                                 r1.tri.nc        <= '1';
                                 r1.tri.size      <= size_8B;
                                 r1.tri.l1rplway  <= std_ulogic_vector(to_unsigned(replace_way, 2));
@@ -1252,7 +1252,7 @@ begin
                             elsif INTERFACE_TYPE = "tri" then
                             -- NC Load - need to turn r0.req.byte_sel into a correct transaction
                                 r1.tri.val       <= '1';
-                                r1.tri.addr      <= "1" & req_laddr(r1.tri.addr'left-1 downto 0);
+                                r1.tri.addr      <= "1" & ra(r1.tri.addr'left-1 downto 0);
                                 r1.tri.rqtype    <= store;
                                 r1.tri.nc        <= '0';
                                 r1.tri.size      <= size_16B;
@@ -1340,9 +1340,11 @@ begin
         	        -- with.
         	        --
         	        if r1.store_row = get_row(r1.req.addr) and r1.req.dcbz = '0' then
-                        if r1.req.addr(3) = '0' then
+                        if r1.req.addr(3) = '1' then
+                            report "bit 3 is 1 - " & to_hstring(r1.req.addr);
         	                r1.slow_data <= tri_resp_in.data_0;
                         else
+                            report "bit 3 is 0 - " & to_hstring(r1.req.addr);
         	                r1.slow_data <= tri_resp_in.data_1;
                         end if;
         	        end if;

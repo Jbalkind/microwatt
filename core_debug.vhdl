@@ -119,7 +119,7 @@ begin
 	    do_reset <= '0';
 	    do_icreset <= '0';
 
-	    if (rst) then
+	    if (rst = '1') then
 		stopping <= '0';
 		terminated <= '0';
 	    else
@@ -153,7 +153,7 @@ begin
                             gspr_index <= dmi_din(gspr_index_t'left downto 0);
 			end if;
 		    else
-			report("DMI read from " & to_string(dmi_addr));
+			report("DMI read from " & to_hstring(dmi_addr));
 		    end if;
 		end if;
 
